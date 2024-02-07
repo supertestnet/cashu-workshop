@@ -1,2 +1,2 @@
-# cashu-workshop
+# Cashu workshop
 Basic demonstration of a cashu web wallet client
