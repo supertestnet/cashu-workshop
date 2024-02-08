@@ -1,7 +1,7 @@
 # Cashu workshop
 Basic demonstration of a cashu web wallet client
 
-Special thanks to [Gandlaf](http://github.com/gandlafbtc) for his code, as well as to [Calle](https://github.com/callebtc) for helping me get the code to work (he even modifyed the cashu api for me), as well as to [Lucas Ferreira](https://github.com/lucasdcf) and Vinteum for hosting the workshop at [Casa21](https://vinlteum.org) in Sao Paulo, Brasil.
+Special thanks to [Gandlaf](http://github.com/gandlafbtc) for his code, as well as to [Calle](https://github.com/callebtc) for helping me get the code to work (he even modified the cashu api for me), as well as to [Lucas Ferreira](https://github.com/lucasdcf) and Vinteum for hosting the workshop at [Casa21](https://vinlteum.org) in Sao Paulo, Brasil.
 
 # Slideshow
 https://tinyurl.com/cashu-workshop
