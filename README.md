@@ -15,13 +15,17 @@ https://supertestnet.github.io/cashu-workshop
 # Resources
 
 **Cashu NUT specs**
+
 https://github.com/cashubtc/nuts
 
 **Awesome cashu**
+
 https://github.com/cashubtc/awesome-cashu
 
 **Blind sig js**
+
 https://github.com/supertestnet/blind-sig-js
 
 **Cashu crypto js**
+
 https://github.com/gandlafbtc/cashu-crypto-js
