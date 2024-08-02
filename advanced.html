@@ -2,6 +2,7 @@
 <html>
 <head>
     <meta charset="UTF-8">
+    <script src="https://supertestnet.github.io/bitcoin-chess/js/bolt11.js"></script>
     <script src="https://supertestnet.github.io/blind-sig-js/blindSigJS.js"></script>
     <script src="https://cdn.jsdelivr.net/gh/6502/sha256@main/sha256.js"></script>
     <script>var SHA256 = string_or_uint8array => bytesToHex( sha256( string_or_uint8array ) );</script>
@@ -61,6 +62,7 @@
     <script>
         var utxos = [];
         var endpoint = `https://testnut.cashu.space`;
+        // var endpoint = "https://mint.minibits.cash/Bitcoin";
         var $ = document.querySelector.bind( document );
         var $$ = document.querySelectorAll.bind( document );
         var getBalance = () => {
@@ -150,8 +152,184 @@
             $( '.balance' ).innerText = getBalance();
         }
         $( '.send' ).onclick = async () => {
+        	var is_ln = false;
             var invoice_or_amount = prompt( `enter a lightning invoice or the amount you want to send` );
-            if ( isNaN( invoice_or_amount ) ) return alert( `this wallet does not support sending via lightning yet` );
+            if ( isNaN( invoice_or_amount ) ) {
+            	var amount = bolt11.decode( invoice_or_amount ).satoshis;
+            	is_ln = true;
+            	var amount = Number( invoice_or_amount );
+            	// TODO: uncomment the line below
+            	// if ( isNaN( amount ) || Number( amount ) < 1 || amount > getBalance() ) return alert( `you cannot send more than you have` );
+            	var post_data = {
+            		method: "POST",
+            		headers: {"Content-Type": "application/json"},
+            		body: JSON.stringify({request: invoice_or_amount, unit: "sat"}),
+            	}
+            	var quote_info = await fetch( `${endpoint}/v1/melt/quote/bolt11`, post_data );
+            	quote_info = await quote_info.json();
+            	console.log( quote_info );
+				var quote_id = quote_info[ "quote" ];
+				var send_amnt = quote_info[ "amount" ] + quote_info[ "fee_reserve" ];
+				var change = getBalance() - send_amnt;
+				var change_decomposed = decomposeAmount( change );
+				if ( change_decomposed.length === 1 && change_decomposed[ 0 ] === 0 ) change_decomposed = [];
+				var send_amnt_decomposed = decomposeAmount( send_amnt );
+				var potential_change_outputs = [];
+				var potential_send_outputs = [];
+				var change_secrets = {}
+				var send_secrets = {}
+				var i; for ( i=0; i<change_decomposed.length; i++ ) {
+				    var item = change_decomposed[ i ];
+				    var secret_for_msg = bytesToHex(blindSigJS.getRand(32));
+				    var message = new blindSigJS.bsjMsg();
+				    var B_ = await message.createBlindedMessageFromString( secret_for_msg );
+				    var B_hex = blindSigJS.ecPointToHex( B_ );
+				    var keyset = utxos[ 0 ][ "id" ];
+				    potential_change_outputs.push({
+				        "amount": item,
+				        "id": keyset,
+				        "B_": B_hex,
+				    });
+				    change_secrets[ item ] = [ secret_for_msg, message ];
+				}
+				var i; for ( i=0; i<send_amnt_decomposed.length; i++ ) {
+				    var item = send_amnt_decomposed[ i ];
+				    var secret_for_msg = bytesToHex(blindSigJS.getRand(32));
+				    var message = new blindSigJS.bsjMsg();
+				    var B_ = await message.createBlindedMessageFromString( secret_for_msg );
+				    var B_hex = blindSigJS.ecPointToHex( B_ );
+				    var keyset = utxos[ 0 ][ "id" ];
+				    potential_send_outputs.push({
+				        "amount": item,
+				        "id": keyset,
+				        "B_": B_hex,
+				    });
+				    send_secrets[ item ] = [ secret_for_msg, message ];
+				}
+				var swap_data = {
+				    "inputs": utxos,
+				    "outputs": [ ...potential_change_outputs, ...potential_send_outputs ],
+				}
+				var post_data = {
+				    method: "POST",
+				    headers: {"Content-Type": "application/json"},
+				    body: JSON.stringify( swap_data ),
+				}
+				var blinded_sigs = await fetch( `${endpoint}/v1/swap`, post_data );
+				blinded_sigs = await blinded_sigs.json();
+				var real_change_utxos = [];
+				var real_send_utxos = [];
+				var pubkeys = null;
+				var keyset_to_use = null;
+				var i; for ( i=0; i<blinded_sigs[ "signatures" ].length; i++ ) {
+				    var blinded_sig = blinded_sigs[ "signatures" ][ i ][ "C_" ];
+				    if ( i < potential_change_outputs.length ) {
+				        var utxo = potential_change_outputs[ i ];
+				    } else {
+				        var j = i - potential_change_outputs.length;
+				        var utxo = potential_send_outputs[ j ];
+				    }
+				    var keyset = utxo[ "id" ];
+				    keyset_to_use = keyset;
+				    if ( !pubkeys ) {
+				        pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
+				        pubkeys = await pubkeys.json();
+				        pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
+				    }
+				    var amount_i_want = utxo[ "amount" ];
+				    var amt_pubkey = pubkeys[ amount_i_want ];
+				    amt_pubkey = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( amt_pubkey ) );
+				    var new_C_ = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( blinded_sig ) );
+				    if ( i < potential_change_outputs.length ) secret_for_msg = change_secrets[ utxo[ "amount" ] ][ 0 ];
+				    else secret_for_msg = send_secrets[ utxo[ "amount" ] ][ 0 ];
+				    if ( i < potential_change_outputs.length ) message = change_secrets[ utxo[ "amount" ] ][ 1 ];
+				    else message = send_secrets[ utxo[ "amount" ] ][ 1 ];
+				    var {C} = message.unblindSignature( new_C_, amt_pubkey );
+				    var compressed_C = nobleSecp256k1.Point.fromHex( blindSigJS.ecPointToHex( C ) ).toHex( true );
+				    var new_utxo = {
+				        id: utxo[ "id" ],
+				        amount: utxo[ "amount" ],
+				        secret: secret_for_msg,
+				        C: compressed_C,
+				    }
+				    if ( i < potential_change_outputs.length ) real_change_utxos.push( new_utxo );
+				    else real_send_utxos.push( new_utxo );
+				}
+				utxos = real_change_utxos;
+				var potential_outputs = [];
+				var secrets = {}
+				if ( quote_info[ "fee_reserve" ] ) {
+					var num_of_outputs = Math.max( Math.ceil( Math.log2( quote_info[ "fee_reserve" ] ) ), 1 );
+					var i; for ( i=0; i<num_of_outputs; i++ ) {
+					    var secret_for_msg = bytesToHex(blindSigJS.getRand(32));
+					    var message = new blindSigJS.bsjMsg();
+					    var B_ = await message.createBlindedMessageFromString( secret_for_msg );
+					    var B_hex = blindSigJS.ecPointToHex( B_ );
+					    var keyset = keyset_to_use;
+					    potential_outputs.push({
+					    	"amount": 0,
+					        "id": keyset,
+					        "B_": B_hex,
+					    });
+					    secrets[ item ] = [ secret_for_msg, message ];
+					}
+				}
+				var pay_data = {
+					method: "POST",
+					headers: {"Content-Type": "application/json"},
+					body: JSON.stringify({quote: quote_id, inputs: real_send_utxos, outputs: potential_outputs}),
+				}
+				var pay_info = await fetch( `${endpoint}/v1/melt/bolt11`, pay_data );
+				pay_info = await pay_info.json();
+				var pubkeys = null;
+				if ( pay_info[ "paid" ] ) {
+					var blinded_sigs = pay_info[ "change" ];
+					var i; for ( i=0; i<blinded_sigs.length; i++ ) {
+					    var blinded_sig = blinded_sigs[ i ][ "C_" ];
+				        var utxo = potential_outputs[ i ];
+				        utxo[ "amount" ] = blinded_sigs[ i ][ "amount" ];
+					    var keyset = utxo[ "id" ];
+					    if ( !pubkeys ) {
+					        pubkeys = await fetch( `${endpoint}/v1/keys/${keyset}` );
+					        pubkeys = await pubkeys.json();
+					        pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
+					    }
+					    var amount_i_want = utxo[ "amount" ];
+					    var amt_pubkey = pubkeys[ amount_i_want ];
+					    amt_pubkey = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( amt_pubkey ) );
+					    var new_C_ = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( blinded_sig ) );
+					    var secret_for_msg = secrets[ utxo[ "amount" ] ][ 0 ];
+					    var message = secrets[ utxo[ "amount" ] ][ 1 ];
+					    var {C} = message.unblindSignature( new_C_, amt_pubkey );
+					    var compressed_C = nobleSecp256k1.Point.fromHex( blindSigJS.ecPointToHex( C ) ).toHex( true );
+					    var new_utxo = {
+					        id: utxo[ "id" ],
+					        amount: utxo[ "amount" ],
+					        secret: secret_for_msg,
+					        C: compressed_C,
+					    }
+					    utxos.push( new_utxo );
+					}
+				}
+	            $( '.balance' ).innerText = getBalance();
+				//consider this: *while* awaiting for that to return you could
+				//check if the mint recognizes the quote has been paid by
+				//querying this endpoint: https://mint.host:3338/v1/melt/quote/bolt11/{quote_id}
+				//according to how nut-05 says to do it
+				//nut-05 also recommends looping while waiting for pay_info to
+				//return, basically just trying again and again if the payload
+				//returns with a false value for the key "paid"
+				// var isPaid = async invoice => {
+				//     await waitASec( 5 );
+				//     var is_paid_info = await fetch( `${endpoint}/v1/melt/quote/bolt11/${quote_id}` );
+				//     is_paid_info = await is_paid_info.json();
+				//     var is_paid = is_paid_info[ "paid" ];
+				//     console.log( "it is paid, right?", is_paid );
+				//     return is_paid || isPaid( invoice );
+				// }
+				// await isPaid( invoice_data[ "request" ] );
+				return;
+            }
             var amount = Number( invoice_or_amount );
             if ( isNaN( amount ) || Number( amount ) < 1 || amount > getBalance() ) return alert( `you cannot send more than you have` );
             var change = getBalance() - amount;
