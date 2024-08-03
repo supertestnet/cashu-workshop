@@ -51,7 +51,7 @@
             var num_of_iterations = amounts_to_get.length;
             if ( make_blank ) num_of_iterations = amounts_to_get;
             var outputs = [];
-            var secrets = {}
+            var secrets = [];
             var i; for ( i=0; i<num_of_iterations; i++ ) {
                 if ( !make_blank && !full_utxos ) {
                     var item = amounts_to_get[ i ];
@@ -72,7 +72,7 @@
                     id: keyset,
                     "B_": B_hex,
                 });
-                secrets[ amount ] = [ secret_for_msg, message ];
+                secrets.push( [ secret_for_msg, message ] );
             }
             return [ outputs, secrets ];
         }
@@ -83,9 +83,9 @@
                 var sig_data = sigs[ i ];
                 var id = sig_data[ "id" ];
                 var amount = sig_data[ "amount" ];
-                var secret = secrets[ amount ][ 0 ];
+                var secret = secrets[ i ][ 0 ];
                 var blinded_sig = sig_data[ "C_" ];
-                var message = secrets[ amount ][ 1 ];
+                var message = secrets[ i ][ 1 ];
                 var C_ = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( blinded_sig ) );
                 var amt_pubkey = pubkeys[ amount ];
                 amt_pubkey = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( amt_pubkey ) );
@@ -111,8 +111,8 @@
     </center>
     <script>
         var utxos = [];
-        var endpoint = `https://testnut.cashu.space`;
-        // var endpoint = "https://mint.minibits.cash/Bitcoin";
+        var mymint = `https://testnut.cashu.space`;
+        // var mymint = "https://mint.minibits.cash/Bitcoin";
         var $ = document.querySelector.bind( document );
         var $$ = document.querySelectorAll.bind( document );
         var getBalance = () => {
@@ -122,13 +122,13 @@
         }
         var depositToMint = async full_amount => {
             // Pick one of the mint's keysets
-            var keysets = await fetch( `${endpoint}/v1/keysets` );
+            var keysets = await fetch( `${mymint}/v1/keysets` );
             keysets = await keysets.json();
             keysets = keysets[ "keysets" ];
             var keyset;
             keysets.every( item => {if ( isValidHex( item.id ) && item.active ) {keyset = item.id;return;} return true;});
             // Pick an amount and get its pubkey
-            var pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
+            var pubkeys = await fetch(`${mymint}/v1/keys/${keyset}`);
             pubkeys = await pubkeys.json();
             pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
             var amounts_to_get = decomposeAmount( full_amount );
@@ -139,13 +139,13 @@
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify({"amount": full_amount, "unit": "sat"}),
             }
-            var invoice_data = await fetch( `${endpoint}/v1/mint/quote/bolt11`, post_data );
+            var invoice_data = await fetch( `${mymint}/v1/mint/quote/bolt11`, post_data );
             invoice_data = await invoice_data.json();
             // Pay that invoice (but not on testnut)
             console.log( `pay this: ${invoice_data[ "request" ]}` );
             var isPaid = async invoice => {
                 await waitASec( 5 );
-                var is_paid_info = await fetch( `${endpoint}/v1/mint/quote/bolt11/${invoice_data[ "quote" ]}` );
+                var is_paid_info = await fetch( `${mymint}/v1/mint/quote/bolt11/${invoice_data[ "quote" ]}` );
                 is_paid_info = await is_paid_info.json();
                 var is_paid = is_paid_info[ "paid" ];
                 console.log( "it is paid, right?", is_paid );
@@ -161,7 +161,7 @@
                 headers: {"Content-Type": "application/json"},
                 body: JSON.stringify(sig_request),
             }
-            var blinded_sigs = await fetch( `${endpoint}/v1/mint/bolt11`, post_data );
+            var blinded_sigs = await fetch( `${mymint}/v1/mint/bolt11`, post_data );
             blinded_sigs = await blinded_sigs.json();
             // Unblind the sigs and add utxos
             var new_utxos = processSigs( blinded_sigs[ "signatures" ], secrets, pubkeys );
@@ -169,40 +169,44 @@
             $( '.balance' ).innerText = getBalance();
         }
         $( '.send' ).onclick = async () => {
-            var is_ln = false;
             var invoice_or_amount = prompt( `enter a lightning invoice or the amount you want to send` );
+            if ( !invoice_or_amount ) return;
             if ( isNaN( invoice_or_amount ) ) {
-                var amount = bolt11.decode( invoice_or_amount ).satoshis;
-                is_ln = true;
-                if ( isNaN( amount ) || Number( amount ) < 1 || amount > getBalance() ) return alert( `you cannot send more than you have` );
+                var pre_amount = bolt11.decode( invoice_or_amount ).satoshis;
                 var post_data = {
                     method: "POST",
                     headers: {"Content-Type": "application/json"},
                     body: JSON.stringify({request: invoice_or_amount, unit: "sat"}),
                 }
-                var quote_info = await fetch( `${endpoint}/v1/melt/quote/bolt11`, post_data );
+                var quote_info = await fetch( `${mymint}/v1/melt/quote/bolt11`, post_data );
                 quote_info = await quote_info.json();
-                console.log( quote_info );
                 var quote_id = quote_info[ "quote" ];
-                var send_amnt = quote_info[ "amount" ] + quote_info[ "fee_reserve" ];
-                var change = getBalance() - send_amnt;
-                var change_decomposed = decomposeAmount( change );
-                if ( change_decomposed.length === 1 && change_decomposed[ 0 ] === 0 ) change_decomposed = [];
-                var send_amnt_decomposed = decomposeAmount( send_amnt );
-                //TODO: ensure all your utxos use the same keyset before this part
-                var keyset = utxos[ 0 ][ "id" ];
-                var [ potential_change_outputs, change_secrets ] = await getUtxosAndSecrets( change_decomposed, keyset );
-                var [ potential_send_outputs, send_secrets ] = await getUtxosAndSecrets( send_amnt_decomposed, keyset );
+                var amount = quote_info[ "amount" ] + quote_info[ "fee_reserve" ];
+            } else {
+                var amount = Number( invoice_or_amount );
+            }
+            var err_msg = `you cannot send more than you have`;
+            if ( isNaN( invoice_or_amount ) ) err_msg = `you cannot send this amount because you need an extra ${( quote_info[ "amount" ] + quote_info[ "fee_reserve" ] ) - getBalance()} sats to pay for potential LN routing fees. Try sending a bit less`;
+            if ( isNaN( amount ) || Number( amount ) < 1 || amount > getBalance() ) return alert( err_msg );
+            var change = getBalance() - amount;
+            var change_decomposed = decomposeAmount( change );
+            if ( change_decomposed.length === 1 && change_decomposed[ 0 ] === 0 ) change_decomposed = [];
+            var send_amnt_decomposed = decomposeAmount( amount );
+            var keyset = utxos[ 0 ][ "id" ];
+            var [ potential_change_outputs, change_secrets ] = await getUtxosAndSecrets( change_decomposed, keyset );
+            var [ potential_send_outputs, send_secrets ] = await getUtxosAndSecrets( send_amnt_decomposed, keyset );
+            if ( potential_change_outputs.length ) {
                 var swap_data = {
                     "inputs": utxos,
                     "outputs": [ ...potential_change_outputs, ...potential_send_outputs ],
                 }
+                //TODO: ensure all your utxos use the same mint before this part
                 var post_data = {
                     method: "POST",
                     headers: {"Content-Type": "application/json"},
                     body: JSON.stringify( swap_data ),
                 }
-                var blinded_sigs = await fetch( `${endpoint}/v1/swap`, post_data );
+                var blinded_sigs = await fetch( `${mymint}/v1/swap`, post_data );
                 blinded_sigs = await blinded_sigs.json();
                 var change_blinded_sigs = [];
                 var send_blinded_sigs = [];
@@ -210,13 +214,18 @@
                     if ( index < potential_change_outputs.length ) change_blinded_sigs.push( sig );
                     else send_blinded_sigs.push( sig );
                 });
-                var pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
+                var pubkeys = await fetch(`${mymint}/v1/keys/${keyset}`);
                 pubkeys = await pubkeys.json();
                 pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
                 var real_change_utxos = processSigs( change_blinded_sigs, change_secrets, pubkeys );
                 utxos.push( ...real_change_utxos );
                 var real_send_utxos = processSigs( send_blinded_sigs, send_secrets, pubkeys );
                 utxos = real_change_utxos;
+            } else {
+                var real_send_utxos = utxos;
+                utxos = [];
+            }
+            if ( isNaN( invoice_or_amount ) ) {
                 if ( quote_info[ "fee_reserve" ] ) var [ potential_outputs, secrets ] = await getUtxosAndSecrets( change_decomposed, keyset, true );
                 else var potential_outputs = [];
                 var pay_data = {
@@ -224,11 +233,11 @@
                     headers: {"Content-Type": "application/json"},
                     body: JSON.stringify({quote: quote_id, inputs: real_send_utxos, outputs: potential_outputs}),
                 }
-                var pay_info = await fetch( `${endpoint}/v1/melt/bolt11`, pay_data );
+                var pay_info = await fetch( `${mymint}/v1/melt/bolt11`, pay_data );
                 pay_info = await pay_info.json();
                 if ( pay_info[ "paid" ] ) {
                     if ( "change" in pay_info && pay_info[ "change" ].length ) {
-                        var pubkeys = await fetch( `${endpoint}/v1/keys/${keyset}` );
+                        var pubkeys = await fetch( `${mymint}/v1/keys/${keyset}` );
                         pubkeys = await pubkeys.json();
                         pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
                         var change_utxos = processSigs( pay_info[ "change" ], secrets, pubkeys );
@@ -245,42 +254,8 @@
                 }
                 return;
             }
-            var amount = Number( invoice_or_amount );
-            if ( isNaN( amount ) || Number( amount ) < 1 || amount > getBalance() ) return alert( `you cannot send more than you have` );
-            var change = getBalance() - amount;
-            var change_decomposed = decomposeAmount( change );
-            if ( change_decomposed.length === 1 && change_decomposed[ 0 ] === 0 ) change_decomposed = [];
-            var send_amnt_decomposed = decomposeAmount( amount );
-            //TODO: ensure all your utxos use the same keyset before this part
-            var keyset = utxos[ 0 ][ "id" ];
-            var [ potential_change_outputs, change_secrets ] = await getUtxosAndSecrets( change_decomposed, keyset );
-            var [ potential_send_outputs, send_secrets ] = await getUtxosAndSecrets( send_amnt_decomposed, keyset );
-            var swap_data = {
-                "inputs": utxos,
-                "outputs": [ ...potential_change_outputs, ...potential_send_outputs ],
-            }
-            var post_data = {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify( swap_data ),
-            }
-            var blinded_sigs = await fetch( `${endpoint}/v1/swap`, post_data );
-            blinded_sigs = await blinded_sigs.json();
-            var change_blinded_sigs = [];
-            var send_blinded_sigs = [];
-            blinded_sigs[ "signatures" ].forEach( ( sig, index ) => {
-                if ( index < potential_change_outputs.length ) change_blinded_sigs.push( sig );
-                else send_blinded_sigs.push( sig );
-            });
-            var pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
-            pubkeys = await pubkeys.json();
-            pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
-            var real_change_utxos = processSigs( change_blinded_sigs, change_secrets, pubkeys );
-            utxos.push( ...real_change_utxos );
-            var real_send_utxos = processSigs( send_blinded_sigs, send_secrets, pubkeys );
-            utxos = real_change_utxos;
             var nut = {
-                mint: endpoint,
+                mint: mymint,
                 proofs: real_send_utxos,
             }
             nut = "cashuA" + btoa( JSON.stringify( {token: [nut]} ) );
@@ -288,24 +263,19 @@
             $( '.balance' ).innerText = getBalance();
         }
         $( '.receive' ).onclick = async () => {
-            var type = confirm( `to receive via lightning, click ok. To import ecash tokens, click cancel` );
-            if ( type ) {
-                var full_amount = Number( prompt( `enter how much you want` ) );
-                if ( !full_amount ) return;
-                return depositToMint( full_amount );
+            var string_or_amount = prompt( `enter how much you want or an ecash string` );
+            if ( !string_or_amount ) return;
+            if ( !isNaN( string_or_amount ) ) {
+                return depositToMint( string_or_amount );
             }
-            var token = prompt( `Enter a cashu token` );
+            var token = string_or_amount;
             token = token.substring( token.indexOf( "cashuA" ) + 6 );
             token = JSON.parse( atob( token ) );
-            var potential_utxos = [];
-            var pubkeys = null;
-            var keyset = null;
             var i; for ( i=0; i<token.token.length; i++ ) {
                 var inner_token = token.token[ i ];
-                inner_token["proofs"].forEach(item => potential_utxos.push(item));
-                var [ new_ones, secrets ] = await getUtxosAndSecrets( potential_utxos, null, false, true );
+                var [ new_ones, secrets ] = await getUtxosAndSecrets( inner_token["proofs"], null, false, true );
                 var swap_data = {
-                    "inputs": potential_utxos,
+                    "inputs": inner_token["proofs"],
                     "outputs": new_ones,
                 }
                 var post_data = {
@@ -313,16 +283,30 @@
                     headers: {"Content-Type": "application/json"},
                     body: JSON.stringify( swap_data ),
                 }
-                var endpoint = inner_token[ "mint" ];
-                var blinded_sigs = await fetch( `${endpoint}/v1/swap`, post_data );
+                var token_mint = inner_token[ "mint" ];
+                var blinded_sigs = await fetch( `${token_mint}/v1/swap`, post_data );
                 blinded_sigs = await blinded_sigs.json();
-                //TODO: ensure all proofs use the same keyset before this part
-                if ( !keyset ) keyset = inner_token[ "proofs" ][ 0 ][ "id" ];
-                if ( !pubkeys ) pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
-                pubkeys = await pubkeys.json();
-                pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
-                var new_utxos = processSigs( blinded_sigs[ "signatures" ], secrets, pubkeys );
-                utxos.push( ...new_utxos );
+                var keysets = {}
+                inner_token[ "proofs" ].forEach( ( item, index ) => {
+                    if ( !( item[ "id" ] in keysets ) ) keysets[ item[ "id" ] ] = [];
+                    keysets[ item[ "id" ] ].push( [ blinded_sigs[ "signatures" ][ index ], secrets[ index ] ] );
+                });
+                var pubkeys = null;
+                var j; for ( j=0; j<Object.keys( keysets ).length; j++ ) {
+                    var keyset = Object.keys( keysets )[ j ];
+                    var set_of_tokens_and_sigs = keysets[ keyset ];
+                    pubkeys = await fetch( `${token_mint}/v1/keys/${keyset}` );
+                    pubkeys = await pubkeys.json();
+                    pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
+                    var inner_sigs = [];
+                    var inner_secrets = [];
+                    set_of_tokens_and_sigs.forEach( ( item, index ) => {
+                        inner_sigs.push( item[ 0 ] );
+                        inner_secrets.push( item[ 1 ] );
+                    });
+                    var new_utxos = processSigs( inner_sigs, inner_secrets, pubkeys );
+                    utxos.push( ...new_utxos );
+                }
                 $( '.balance' ).innerText = getBalance();
             }
         }
