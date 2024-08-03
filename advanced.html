@@ -186,7 +186,7 @@
                 var amount = Number( invoice_or_amount );
             }
             var err_msg = `you cannot send more than you have`;
-            if ( isNaN( invoice_or_amount ) ) err_msg = `you cannot send this amount because you need an extra ${( quote_info[ "amount" ] + quote_info[ "fee_reserve" ] ) - getBalance()} sats to pay for potential LN routing fees. Try sending a bit less`;
+            if ( isNaN( invoice_or_amount ) ) err_msg = `you cannot send this amount because you need an extra ${amount - getBalance()} sats to pay for potential LN routing fees. Try sending a bit less`;
             if ( isNaN( amount ) || Number( amount ) < 1 || amount > getBalance() ) return alert( err_msg );
             var change = getBalance() - amount;
             var change_decomposed = decomposeAmount( change );
