@@ -4,8 +4,6 @@
     <meta charset="UTF-8">
     <script src="https://supertestnet.github.io/bitcoin-chess/js/bolt11.js"></script>
     <script src="https://supertestnet.github.io/blind-sig-js/blindSigJS.js"></script>
-    <script src="https://cdn.jsdelivr.net/gh/6502/sha256@main/sha256.js"></script>
-    <script>var SHA256 = string_or_uint8array => bytesToHex( sha256( string_or_uint8array ) );</script>
     <script src="https://bundle.run/noble-secp256k1@1.2.14"></script>
     <script>
         var isValidHex = hex => {
@@ -176,7 +174,6 @@
             if ( isNaN( invoice_or_amount ) ) {
                 var amount = bolt11.decode( invoice_or_amount ).satoshis;
                 is_ln = true;
-                var amount = Number( invoice_or_amount );
                 if ( isNaN( amount ) || Number( amount ) < 1 || amount > getBalance() ) return alert( `you cannot send more than you have` );
                 var post_data = {
                     method: "POST",
@@ -192,6 +189,7 @@
                 var change_decomposed = decomposeAmount( change );
                 if ( change_decomposed.length === 1 && change_decomposed[ 0 ] === 0 ) change_decomposed = [];
                 var send_amnt_decomposed = decomposeAmount( send_amnt );
+                //TODO: ensure all your utxos use the same keyset before this part
                 var keyset = utxos[ 0 ][ "id" ];
                 var [ potential_change_outputs, change_secrets ] = await getUtxosAndSecrets( change_decomposed, keyset );
                 var [ potential_send_outputs, send_secrets ] = await getUtxosAndSecrets( send_amnt_decomposed, keyset );
@@ -253,6 +251,7 @@
             var change_decomposed = decomposeAmount( change );
             if ( change_decomposed.length === 1 && change_decomposed[ 0 ] === 0 ) change_decomposed = [];
             var send_amnt_decomposed = decomposeAmount( amount );
+            //TODO: ensure all your utxos use the same keyset before this part
             var keyset = utxos[ 0 ][ "id" ];
             var [ potential_change_outputs, change_secrets ] = await getUtxosAndSecrets( change_decomposed, keyset );
             var [ potential_send_outputs, send_secrets ] = await getUtxosAndSecrets( send_amnt_decomposed, keyset );
@@ -317,6 +316,7 @@
                 var endpoint = inner_token[ "mint" ];
                 var blinded_sigs = await fetch( `${endpoint}/v1/swap`, post_data );
                 blinded_sigs = await blinded_sigs.json();
+                //TODO: ensure all proofs use the same keyset before this part
                 if ( !keyset ) keyset = inner_token[ "proofs" ][ 0 ][ "id" ];
                 if ( !pubkeys ) pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
                 pubkeys = await pubkeys.json();
