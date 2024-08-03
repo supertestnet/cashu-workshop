@@ -6,52 +6,104 @@
     <script src="https://supertestnet.github.io/blind-sig-js/blindSigJS.js"></script>
     <script src="https://cdn.jsdelivr.net/gh/6502/sha256@main/sha256.js"></script>
     <script>var SHA256 = string_or_uint8array => bytesToHex( sha256( string_or_uint8array ) );</script>
-       <script src="https://bundle.run/noble-secp256k1@1.2.14"></script>
-       <script>
-           var isValidHex = hex => {
-               if ( !hex ) return;
-               var length = hex.length;
-               if ( length % 2 ) return;
-               try {
-                   var bigint = BigInt( "0x" + hex, "hex" );
-               } catch( e ) {
-                   return;
-               }
-               var prepad = bigint.toString( 16 );
-               var i; for ( i=0; i<length; i++ ) prepad = "0" + prepad;
-               var padding = prepad.slice( -Math.abs( length ) );
-               return ( padding === hex );
-           }
-       </script>
-       <script>
-           var hexToBytes = hex => Uint8Array.from( hex.match( /.{1,2}/g ).map( byte => parseInt( byte, 16 ) ) );
+    <script src="https://bundle.run/noble-secp256k1@1.2.14"></script>
+    <script>
+        var isValidHex = hex => {
+            if ( !hex ) return;
+            var length = hex.length;
+            if ( length % 2 ) return;
+            try {
+                var bigint = BigInt( "0x" + hex, "hex" );
+            } catch( e ) {
+                return;
+            }
+            var prepad = bigint.toString( 16 );
+            var i; for ( i=0; i<length; i++ ) prepad = "0" + prepad;
+            var padding = prepad.slice( -Math.abs( length ) );
+            return ( padding === hex );
+        }
 
-           var bytesToHex = bytes => bytes.reduce( ( str, byte ) => str + byte.toString( 16 ).padStart( 2, "0" ), "" );
+		var hexToBytes = hex => Uint8Array.from( hex.match( /.{1,2}/g ).map( byte => parseInt( byte, 16 ) ) );
 
-           var hexToText = hex => {
-               var bytes = new Uint8Array(Math.ceil(hex.length / 2));
-               for (var i = 0; i < hex.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
-               var text = new TextDecoder().decode( bytes );
-               return text;
-           }
-       </script>
-       <script>
-           var waitASec=num=>new Promise(res=>setTimeout(res,num*1000));
-       </script>
-       <script>
-           var decomposeAmount = amount_to_decompose => {
-               var decomposed = [];
-               var getBaseLog = ( x, y ) => Math.log(y) / Math.log(x);
-               var inner_fn = amt => {
-                   var exponent = Math.floor( getBaseLog( 2, amt ) );
-                   decomposed.push( 2 ** exponent );
-                   amount_to_decompose = amt - 2 ** exponent;
-                   if ( amount_to_decompose ) inner_fn(amount_to_decompose);
-               }
-               inner_fn( amount_to_decompose );
-               return decomposed;
-           }
-       </script>
+		var bytesToHex = bytes => bytes.reduce( ( str, byte ) => str + byte.toString( 16 ).padStart( 2, "0" ), "" );
+
+		var hexToText = hex => {
+		    var bytes = new Uint8Array(Math.ceil(hex.length / 2));
+		    for (var i = 0; i < hex.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+		    var text = new TextDecoder().decode( bytes );
+		    return text;
+		}
+
+		var waitASec=num=>new Promise(res=>setTimeout(res,num*1000));
+
+		var decomposeAmount = amount_to_decompose => {
+		    var decomposed = [];
+		    var getBaseLog = ( x, y ) => Math.log(y) / Math.log(x);
+		    var inner_fn = amt => {
+		        var exponent = Math.floor( getBaseLog( 2, amt ) );
+		        decomposed.push( 2 ** exponent );
+		        amount_to_decompose = amt - 2 ** exponent;
+		        if ( amount_to_decompose ) inner_fn(amount_to_decompose);
+		    }
+		    inner_fn( amount_to_decompose );
+		    return decomposed;
+        }
+
+        var getUtxosAndSecrets = async ( amounts_to_get, keyset, make_blank, full_utxos ) => {
+        	var num_of_iterations = amounts_to_get.length;
+        	if ( make_blank ) num_of_iterations = amounts_to_get;
+        	var outputs = [];
+        	var secrets = {}
+        	var i; for ( i=0; i<num_of_iterations; i++ ) {
+        	    if ( !make_blank && !full_utxos ) {
+        	    	var item = amounts_to_get[ i ];
+        	    	var amount = item;
+        	    } else if ( !make_blank && full_utxos ) {
+                    var item = amounts_to_get[ i ];
+                    var amount = item[ "amount" ];
+                    var keyset = item[ "id" ];
+        	    } else {
+        	    	var amount = 1;
+        	    }
+        	    var secret_for_msg = bytesToHex(blindSigJS.getRand(32));
+        	    var message = new blindSigJS.bsjMsg();
+        	    var B_ = await message.createBlindedMessageFromString( secret_for_msg );
+        	    var B_hex = blindSigJS.ecPointToHex( B_ );
+        	    outputs.push({
+        	        amount,
+        	        id: keyset,
+        	        "B_": B_hex,
+        	    });
+        	    secrets[ amount ] = [ secret_for_msg, message ];
+        	}
+        	return [ outputs, secrets ];
+        }
+
+        var processSigs = ( sigs, secrets, pubkeys ) => {
+        	var utxos_to_return = [];
+        	var i; for ( i=0; i<sigs.length; i++ ) {
+        	    var sig_data = sigs[ i ];
+        	    var id = sig_data[ "id" ];
+        	    var amount = sig_data[ "amount" ];
+        	    var secret = secrets[ amount ][ 0 ];
+        	    var blinded_sig = sig_data[ "C_" ];
+        	    var message = secrets[ amount ][ 1 ];
+        	    var C_ = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( blinded_sig ) );
+        	    var amt_pubkey = pubkeys[ amount ];
+        	    amt_pubkey = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( amt_pubkey ) );
+        	    var {C} = message.unblindSignature(C_, amt_pubkey);
+        	    var compressed_C = nobleSecp256k1.Point.fromHex( blindSigJS.ecPointToHex( C ) ).toHex( true );
+        	    var utxo = {
+        	        id,
+        	        amount,
+        	        secret,
+        	        C: compressed_C,
+        	    }
+        	    utxos_to_return.push( utxo );
+        	}
+        	return utxos_to_return;
+        }
+    </script>
 </head>
 <body>
     <center><h2 class="balance">0</h2></center></h1>
@@ -71,20 +123,19 @@
             return bal;
         }
         var depositToMint = async full_amount => {
-            // Step 1 Pick one of the mint's keysets
+            // Pick one of the mint's keysets
             var keysets = await fetch( `${endpoint}/v1/keysets` );
             keysets = await keysets.json();
             keysets = keysets[ "keysets" ];
             var keyset;
             keysets.every( item => {if ( isValidHex( item.id ) && item.active ) {keyset = item.id;return;} return true;});
-            // Step 2 Pick an amount and get its pubkey
+            // Pick an amount and get its pubkey
             var pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
             pubkeys = await pubkeys.json();
             pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
             var amounts_to_get = decomposeAmount( full_amount );
             amounts_to_get.sort();
-            var amount_i_want = amounts_to_get[ i ];
-            // Step 3 Get an LN invoice for that amount
+            // Get an LN invoice for that amount
             var post_data = {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
@@ -92,7 +143,7 @@
             }
             var invoice_data = await fetch( `${endpoint}/v1/mint/quote/bolt11`, post_data );
             invoice_data = await invoice_data.json();
-            // Step 4 Pay that invoice (but not on testnut)
+            // Pay that invoice (but not on testnut)
             console.log( `pay this: ${invoice_data[ "request" ]}` );
             var isPaid = async invoice => {
                 await waitASec( 5 );
@@ -103,24 +154,10 @@
                 return is_paid || isPaid( invoice );
             }
             await isPaid( invoice_data[ "request" ] );
-            // Step 5 Prepare a sig request
-            var outputs = [];
-            var secrets = {}
-            var i; for ( i=0; i<amounts_to_get.length; i++ ) {
-                var item = amounts_to_get[ i ];
-                var secret_for_msg = bytesToHex(blindSigJS.getRand(32));
-                var message = new blindSigJS.bsjMsg();
-                var B_ = await message.createBlindedMessageFromString( secret_for_msg );
-                var B_hex = blindSigJS.ecPointToHex( B_ );
-                outputs.push({
-                    "amount": item,
-                    "id": keyset,
-                    "B_": B_hex,
-                });
-                secrets[ item ] = [ secret_for_msg, message ];
-            }
+            // Prepare a sig request
+            var [ outputs, secrets ] = await getUtxosAndSecrets( amounts_to_get, keyset );
             var sig_request = {"quote": invoice_data[ "quote" ], outputs}
-            // Step 7 Get a blinded sig
+            // Get blinded sigs
             var post_data = {
                 method: "POST",
                 headers: {"Content-Type": "application/json"},
@@ -128,27 +165,9 @@
             }
             var blinded_sigs = await fetch( `${endpoint}/v1/mint/bolt11`, post_data );
             blinded_sigs = await blinded_sigs.json();
-            var i; for ( i=0; i<blinded_sigs[ "signatures" ].length; i++ ) {
-                var sig_data = blinded_sigs[ "signatures" ][ i ];
-                var id = sig_data[ "id" ];
-                var amount = sig_data[ "amount" ];
-                var secret = secrets[ amount ][ 0 ];
-                var blinded_sig = sig_data[ "C_" ];
-                var message = secrets[ amount ][ 1 ];
-                // Step 8 Unblind the sig and create a "utxo"
-                var C_ = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( blinded_sig ) );
-                var amt_pubkey = pubkeys[ amount ];
-                amt_pubkey = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( amt_pubkey ) );
-                var {C} = message.unblindSignature(C_, amt_pubkey);
-                var compressed_C = nobleSecp256k1.Point.fromHex( blindSigJS.ecPointToHex( C ) ).toHex( true );
-                var utxo = {
-                    id,
-                    amount,
-                    secret,
-                    C: compressed_C,
-                }
-                utxos.push( utxo );
-            }
+            // Unblind the sigs and add utxos
+            var new_utxos = processSigs( blinded_sigs[ "signatures" ], secrets, pubkeys );
+            utxos.push( ...new_utxos );
             $( '.balance' ).innerText = getBalance();
         }
         $( '.send' ).onclick = async () => {
@@ -158,8 +177,7 @@
             	var amount = bolt11.decode( invoice_or_amount ).satoshis;
             	is_ln = true;
             	var amount = Number( invoice_or_amount );
-            	// TODO: uncomment the line below
-            	// if ( isNaN( amount ) || Number( amount ) < 1 || amount > getBalance() ) return alert( `you cannot send more than you have` );
+            	if ( isNaN( amount ) || Number( amount ) < 1 || amount > getBalance() ) return alert( `you cannot send more than you have` );
             	var post_data = {
             		method: "POST",
             		headers: {"Content-Type": "application/json"},
@@ -174,38 +192,9 @@
 				var change_decomposed = decomposeAmount( change );
 				if ( change_decomposed.length === 1 && change_decomposed[ 0 ] === 0 ) change_decomposed = [];
 				var send_amnt_decomposed = decomposeAmount( send_amnt );
-				var potential_change_outputs = [];
-				var potential_send_outputs = [];
-				var change_secrets = {}
-				var send_secrets = {}
-				var i; for ( i=0; i<change_decomposed.length; i++ ) {
-				    var item = change_decomposed[ i ];
-				    var secret_for_msg = bytesToHex(blindSigJS.getRand(32));
-				    var message = new blindSigJS.bsjMsg();
-				    var B_ = await message.createBlindedMessageFromString( secret_for_msg );
-				    var B_hex = blindSigJS.ecPointToHex( B_ );
-				    var keyset = utxos[ 0 ][ "id" ];
-				    potential_change_outputs.push({
-				        "amount": item,
-				        "id": keyset,
-				        "B_": B_hex,
-				    });
-				    change_secrets[ item ] = [ secret_for_msg, message ];
-				}
-				var i; for ( i=0; i<send_amnt_decomposed.length; i++ ) {
-				    var item = send_amnt_decomposed[ i ];
-				    var secret_for_msg = bytesToHex(blindSigJS.getRand(32));
-				    var message = new blindSigJS.bsjMsg();
-				    var B_ = await message.createBlindedMessageFromString( secret_for_msg );
-				    var B_hex = blindSigJS.ecPointToHex( B_ );
-				    var keyset = utxos[ 0 ][ "id" ];
-				    potential_send_outputs.push({
-				        "amount": item,
-				        "id": keyset,
-				        "B_": B_hex,
-				    });
-				    send_secrets[ item ] = [ secret_for_msg, message ];
-				}
+			    var keyset = utxos[ 0 ][ "id" ];
+	            var [ potential_change_outputs, change_secrets ] = await getUtxosAndSecrets( change_decomposed, keyset );
+	            var [ potential_send_outputs, send_secrets ] = await getUtxosAndSecrets( send_amnt_decomposed, keyset );
 				var swap_data = {
 				    "inputs": utxos,
 				    "outputs": [ ...potential_change_outputs, ...potential_send_outputs ],
@@ -217,63 +206,21 @@
 				}
 				var blinded_sigs = await fetch( `${endpoint}/v1/swap`, post_data );
 				blinded_sigs = await blinded_sigs.json();
-				var real_change_utxos = [];
-				var real_send_utxos = [];
-				var pubkeys = null;
-				var keyset_to_use = null;
-				var i; for ( i=0; i<blinded_sigs[ "signatures" ].length; i++ ) {
-				    var blinded_sig = blinded_sigs[ "signatures" ][ i ][ "C_" ];
-				    if ( i < potential_change_outputs.length ) {
-				        var utxo = potential_change_outputs[ i ];
-				    } else {
-				        var j = i - potential_change_outputs.length;
-				        var utxo = potential_send_outputs[ j ];
-				    }
-				    var keyset = utxo[ "id" ];
-				    keyset_to_use = keyset;
-				    if ( !pubkeys ) {
-				        pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
-				        pubkeys = await pubkeys.json();
-				        pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
-				    }
-				    var amount_i_want = utxo[ "amount" ];
-				    var amt_pubkey = pubkeys[ amount_i_want ];
-				    amt_pubkey = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( amt_pubkey ) );
-				    var new_C_ = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( blinded_sig ) );
-				    if ( i < potential_change_outputs.length ) secret_for_msg = change_secrets[ utxo[ "amount" ] ][ 0 ];
-				    else secret_for_msg = send_secrets[ utxo[ "amount" ] ][ 0 ];
-				    if ( i < potential_change_outputs.length ) message = change_secrets[ utxo[ "amount" ] ][ 1 ];
-				    else message = send_secrets[ utxo[ "amount" ] ][ 1 ];
-				    var {C} = message.unblindSignature( new_C_, amt_pubkey );
-				    var compressed_C = nobleSecp256k1.Point.fromHex( blindSigJS.ecPointToHex( C ) ).toHex( true );
-				    var new_utxo = {
-				        id: utxo[ "id" ],
-				        amount: utxo[ "amount" ],
-				        secret: secret_for_msg,
-				        C: compressed_C,
-				    }
-				    if ( i < potential_change_outputs.length ) real_change_utxos.push( new_utxo );
-				    else real_send_utxos.push( new_utxo );
-				}
+				var change_blinded_sigs = [];
+				var send_blinded_sigs = [];
+				blinded_sigs[ "signatures" ].forEach( ( sig, index ) => {
+					if ( index < potential_change_outputs.length ) change_blinded_sigs.push( sig );
+					else send_blinded_sigs.push( sig );
+				});
+				var pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
+				pubkeys = await pubkeys.json();
+				pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
+				var real_change_utxos = processSigs( change_blinded_sigs, change_secrets, pubkeys );
+				utxos.push( ...real_change_utxos );
+				var real_send_utxos = processSigs( send_blinded_sigs, send_secrets, pubkeys );
 				utxos = real_change_utxos;
-				var potential_outputs = [];
-				var secrets = {}
-				if ( quote_info[ "fee_reserve" ] ) {
-					var num_of_outputs = Math.max( Math.ceil( Math.log2( quote_info[ "fee_reserve" ] ) ), 1 );
-					var i; for ( i=0; i<num_of_outputs; i++ ) {
-					    var secret_for_msg = bytesToHex(blindSigJS.getRand(32));
-					    var message = new blindSigJS.bsjMsg();
-					    var B_ = await message.createBlindedMessageFromString( secret_for_msg );
-					    var B_hex = blindSigJS.ecPointToHex( B_ );
-					    var keyset = keyset_to_use;
-					    potential_outputs.push({
-					    	"amount": 1,
-					        "id": keyset,
-					        "B_": B_hex,
-					    });
-					    secrets[ item ] = [ secret_for_msg, message ];
-					}
-				}
+				if ( quote_info[ "fee_reserve" ] ) var [ potential_outputs, secrets ] = await getUtxosAndSecrets( change_decomposed, keyset, true );
+		        else var potential_outputs = [];
 				var pay_data = {
 					method: "POST",
 					headers: {"Content-Type": "application/json"},
@@ -281,53 +228,23 @@
 				}
 				var pay_info = await fetch( `${endpoint}/v1/melt/bolt11`, pay_data );
 				pay_info = await pay_info.json();
-				var pubkeys = null;
 				if ( pay_info[ "paid" ] ) {
-					var blinded_sigs = pay_info[ "change" ];
-					var i; for ( i=0; i<blinded_sigs.length; i++ ) {
-					    var blinded_sig = blinded_sigs[ i ][ "C_" ];
-				        var utxo = potential_outputs[ i ];
-				        utxo[ "amount" ] = blinded_sigs[ i ][ "amount" ];
-					    var keyset = utxo[ "id" ];
-					    if ( !pubkeys ) {
-					        pubkeys = await fetch( `${endpoint}/v1/keys/${keyset}` );
-					        pubkeys = await pubkeys.json();
-					        pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
-					    }
-					    var amount_i_want = utxo[ "amount" ];
-					    var amt_pubkey = pubkeys[ amount_i_want ];
-					    amt_pubkey = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( amt_pubkey ) );
-					    var new_C_ = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( blinded_sig ) );
-					    var secret_for_msg = secrets[ utxo[ "amount" ] ][ 0 ];
-					    var message = secrets[ utxo[ "amount" ] ][ 1 ];
-					    var {C} = message.unblindSignature( new_C_, amt_pubkey );
-					    var compressed_C = nobleSecp256k1.Point.fromHex( blindSigJS.ecPointToHex( C ) ).toHex( true );
-					    var new_utxo = {
-					        id: utxo[ "id" ],
-					        amount: utxo[ "amount" ],
-					        secret: secret_for_msg,
-					        C: compressed_C,
-					    }
-					    utxos.push( new_utxo );
+					if ( "change" in pay_info && pay_info[ "change" ].length ) {
+						var pubkeys = await fetch( `${endpoint}/v1/keys/${keyset}` );
+						pubkeys = await pubkeys.json();
+						pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
+						var change_utxos = processSigs( pay_info[ "change" ], secrets, pubkeys );
+						utxos.push( ...change_utxos );
 					}
+					console.log( "preimage:" );
+					console.log( pay_info[ "payment_preimage" ] );
+		            $( '.balance' ).innerText = getBalance();
+		            alert( `payment succeeded -- the preimage is in your browser console` );
+				} else {
+					alert( `payment failed` );
+					utxos.push( ...real_send_utxos );
+		            $( '.balance' ).innerText = getBalance();
 				}
-	            $( '.balance' ).innerText = getBalance();
-				//consider this: *while* awaiting for that to return you could
-				//check if the mint recognizes the quote has been paid by
-				//querying this endpoint: https://mint.host:3338/v1/melt/quote/bolt11/{quote_id}
-				//according to how nut-05 says to do it
-				//nut-05 also recommends looping while waiting for pay_info to
-				//return, basically just trying again and again if the payload
-				//returns with a false value for the key "paid"
-				// var isPaid = async invoice => {
-				//     await waitASec( 5 );
-				//     var is_paid_info = await fetch( `${endpoint}/v1/melt/quote/bolt11/${quote_id}` );
-				//     is_paid_info = await is_paid_info.json();
-				//     var is_paid = is_paid_info[ "paid" ];
-				//     console.log( "it is paid, right?", is_paid );
-				//     return is_paid || isPaid( invoice );
-				// }
-				// await isPaid( invoice_data[ "request" ] );
 				return;
             }
             var amount = Number( invoice_or_amount );
@@ -336,38 +253,9 @@
             var change_decomposed = decomposeAmount( change );
             if ( change_decomposed.length === 1 && change_decomposed[ 0 ] === 0 ) change_decomposed = [];
             var send_amnt_decomposed = decomposeAmount( amount );
-            var potential_change_outputs = [];
-            var potential_send_outputs = [];
-            var change_secrets = {}
-            var send_secrets = {}
-            var i; for ( i=0; i<change_decomposed.length; i++ ) {
-                var item = change_decomposed[ i ];
-                var secret_for_msg = bytesToHex(blindSigJS.getRand(32));
-                var message = new blindSigJS.bsjMsg();
-                var B_ = await message.createBlindedMessageFromString( secret_for_msg );
-                var B_hex = blindSigJS.ecPointToHex( B_ );
-                var keyset = utxos[ 0 ][ "id" ];
-                potential_change_outputs.push({
-                    "amount": item,
-                    "id": keyset,
-                    "B_": B_hex,
-                });
-                change_secrets[ item ] = [ secret_for_msg, message ];
-            }
-            var i; for ( i=0; i<send_amnt_decomposed.length; i++ ) {
-                var item = send_amnt_decomposed[ i ];
-                var secret_for_msg = bytesToHex(blindSigJS.getRand(32));
-                var message = new blindSigJS.bsjMsg();
-                var B_ = await message.createBlindedMessageFromString( secret_for_msg );
-                var B_hex = blindSigJS.ecPointToHex( B_ );
-                var keyset = utxos[ 0 ][ "id" ];
-                potential_send_outputs.push({
-                    "amount": item,
-                    "id": keyset,
-                    "B_": B_hex,
-                });
-                send_secrets[ item ] = [ secret_for_msg, message ];
-            }
+            var keyset = utxos[ 0 ][ "id" ];
+            var [ potential_change_outputs, change_secrets ] = await getUtxosAndSecrets( change_decomposed, keyset );
+            var [ potential_send_outputs, send_secrets ] = await getUtxosAndSecrets( send_amnt_decomposed, keyset );
             var swap_data = {
                 "inputs": utxos,
                 "outputs": [ ...potential_change_outputs, ...potential_send_outputs ],
@@ -379,42 +267,18 @@
             }
             var blinded_sigs = await fetch( `${endpoint}/v1/swap`, post_data );
             blinded_sigs = await blinded_sigs.json();
-            var real_change_utxos = [];
-            var real_send_utxos = [];
-            var pubkeys = null;
-            var i; for ( i=0; i<blinded_sigs[ "signatures" ].length; i++ ) {
-                var blinded_sig = blinded_sigs[ "signatures" ][ i ][ "C_" ];
-                if ( i < potential_change_outputs.length ) {
-                    var utxo = potential_change_outputs[ i ];
-                } else {
-                    var j = i - potential_change_outputs.length;
-                    var utxo = potential_send_outputs[ j ];
-                }
-                var keyset = utxo[ "id" ];
-                if ( !pubkeys ) {
-                    pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
-                    pubkeys = await pubkeys.json();
-                    pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
-                }
-                var amount_i_want = utxo[ "amount" ];
-                var amt_pubkey = pubkeys[ amount_i_want ];
-                amt_pubkey = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( amt_pubkey ) );
-                var new_C_ = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( blinded_sig ) );
-                if ( i < potential_change_outputs.length ) secret_for_msg = change_secrets[ utxo[ "amount" ] ][ 0 ];
-                else secret_for_msg = send_secrets[ utxo[ "amount" ] ][ 0 ];
-                if ( i < potential_change_outputs.length ) message = change_secrets[ utxo[ "amount" ] ][ 1 ];
-                else message = send_secrets[ utxo[ "amount" ] ][ 1 ];
-                var {C} = message.unblindSignature( new_C_, amt_pubkey );
-                var compressed_C = nobleSecp256k1.Point.fromHex( blindSigJS.ecPointToHex( C ) ).toHex( true );
-                var new_utxo = {
-                    id: utxo[ "id" ],
-                    amount: utxo[ "amount" ],
-                    secret: secret_for_msg,
-                    C: compressed_C,
-                }
-                if ( i < potential_change_outputs.length ) real_change_utxos.push( new_utxo );
-                else real_send_utxos.push( new_utxo );
-            }
+            var change_blinded_sigs = [];
+            var send_blinded_sigs = [];
+            blinded_sigs[ "signatures" ].forEach( ( sig, index ) => {
+            	if ( index < potential_change_outputs.length ) change_blinded_sigs.push( sig );
+            	else send_blinded_sigs.push( sig );
+            });
+            var pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
+            pubkeys = await pubkeys.json();
+            pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
+            var real_change_utxos = processSigs( change_blinded_sigs, change_secrets, pubkeys );
+            utxos.push( ...real_change_utxos );
+            var real_send_utxos = processSigs( send_blinded_sigs, send_secrets, pubkeys );
             utxos = real_change_utxos;
             var nut = {
                 mint: endpoint,
@@ -435,25 +299,12 @@
             token = token.substring( token.indexOf( "cashuA" ) + 6 );
             token = JSON.parse( atob( token ) );
             var potential_utxos = [];
-            var new_ones = [];
-            var secrets = {}
+            var pubkeys = null;
+            var keyset = null;
             var i; for ( i=0; i<token.token.length; i++ ) {
                 var inner_token = token.token[ i ];
                 inner_token["proofs"].forEach(item => potential_utxos.push(item));
-                var j; for ( j=0; j<potential_utxos.length; j++ ) {
-                    var item = potential_utxos[ j ];
-                    var secret_for_msg = bytesToHex(blindSigJS.getRand(32));
-                    var message = new blindSigJS.bsjMsg();
-                    var B_ = await message.createBlindedMessageFromString( secret_for_msg );
-                    var B_hex = blindSigJS.ecPointToHex( B_ );
-                    var keyset = item[ "id" ];
-                    new_ones.push({
-                        "amount": item[ "amount" ],
-                        "id": keyset,
-                        "B_": B_hex,
-                    });
-                    secrets[ item[ "amount" ] ] = [ secret_for_msg, message ];
-                }
+	            var [ new_ones, secrets ] = await getUtxosAndSecrets( potential_utxos, null, false, true );
                 var swap_data = {
                     "inputs": potential_utxos,
                     "outputs": new_ones,
@@ -466,32 +317,12 @@
                 var endpoint = inner_token[ "mint" ];
                 var blinded_sigs = await fetch( `${endpoint}/v1/swap`, post_data );
                 blinded_sigs = await blinded_sigs.json();
-                var pubkeys = null;
-                var j; for ( j=0; j<blinded_sigs[ "signatures" ].length; j++ ) {
-                    var utxo = potential_utxos[ j ];
-                    var blinded_sig = blinded_sigs[ "signatures" ][ j ][ "C_" ];
-                    var keyset = utxo[ "id" ];
-                    if ( !pubkeys ) {
-                        pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
-                        pubkeys = await pubkeys.json();
-                        pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
-                    }
-                    var amount_i_want = utxo[ "amount" ];
-                    var amt_pubkey = pubkeys[ amount_i_want ];
-                    amt_pubkey = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( amt_pubkey ) );
-                    var new_C_ = nobleSecp256k1.Point.fromCompressedHex( hexToBytes( blinded_sig ) );
-                    secret_for_msg = secrets[ utxo[ "amount" ] ][ 0 ];
-                    message = secrets[ utxo[ "amount" ] ][ 1 ];
-                    var {C} = message.unblindSignature( new_C_, amt_pubkey );
-                    var compressed_C = nobleSecp256k1.Point.fromHex( blindSigJS.ecPointToHex( C ) ).toHex( true );
-                    var new_utxo = {
-                        id: utxo[ "id" ],
-                        amount: utxo[ "amount" ],
-                        secret: secret_for_msg,
-                        C: compressed_C,
-                    }
-                    utxos.push( new_utxo );
-                }
+                if ( !keyset ) keyset = inner_token[ "proofs" ][ 0 ][ "id" ];
+                if ( !pubkeys ) pubkeys = await fetch(`${endpoint}/v1/keys/${keyset}`);
+                pubkeys = await pubkeys.json();
+                pubkeys = pubkeys[ "keysets" ][ 0 ][ "keys" ];
+                var new_utxos = processSigs( blinded_sigs[ "signatures" ], secrets, pubkeys );
+                utxos.push( ...new_utxos );
                 $( '.balance' ).innerText = getBalance();
             }
         }
