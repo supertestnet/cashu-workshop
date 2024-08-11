@@ -248,6 +248,11 @@
             return utxos_to_return;
         }
     </script>
+    <style>
+        .hidden {
+            display: none !important;
+        }
+    </style>
 </head>
 <body>
     <center><h2 class="balance">0</h2></center></h1>
@@ -255,10 +260,19 @@
         <button class="send">Send</button>
         <button class="receive">Receive</button>
     </center>
+    <center>
+        <br>
+        <button class="create_nwc_connection">Create NWC connection</button>
+        <br><br>
+        <button class="connect_to_mint">Connect to mint</button>
+        <br>
+        <div class="nwc_string_div"></div>
+    </center>
     <script>
         var utxos = [];
         var invoice_requests = {}
-        var mymint = `https://testnut.cashu.space`;
+        var mymint = null;
+        // var mymint = `https://testnut.cashu.space`;
         // var mymint = "https://mint.minibits.cash/Bitcoin";
         var $ = document.querySelector.bind( document );
         var $$ = document.querySelectorAll.bind( document );
@@ -266,6 +280,14 @@
             var bal = 0;
             utxos.forEach( item => bal = bal + item[ "amount" ] );
             return bal;
+        }
+        async function getBlockheight() {
+            var data = await fetch( `https://mempool.space/api/blocks/tip/height` );
+            return Number( await data.text() );
+        }
+        async function getBlockhash( blocknum ) {
+            var data = await fetch( `https://mempool.space/api/block-height/${blocknum}` );
+            return data.text();
         }
         var getInvoicePmthash = invoice => {
             var decoded = bolt11.decode( invoice );
@@ -332,8 +354,9 @@
             var is_paid_info = await fetch( url );
             is_paid_info = await is_paid_info.json();
             var is_paid = is_paid_info[ "paid" ];
-            nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "settled_at" ] = Math.floor( Date.now() / 1000 );
+            nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "paid" ] = true;
             var status_changed = is_paid && !settled_status;
+            if ( status_changed ) nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "settled_at" ] = Math.floor( Date.now() / 1000 );
             if ( status_changed ) nostr_state.nwc_info[ app_pubkey ].balance = nostr_state.nwc_info[ app_pubkey ].balance + nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "amount" ];
             if ( status_changed ) getSigsAfterLNInvoiceIsPaid( invoice_data );
             return is_paid;
@@ -364,6 +387,7 @@
         }
         var depositToMint = async full_amount => {
             // Pick one of the mint's keysets
+            if ( !mymint ) return alert( `you need to connect to a mint first` );
             var keysets = await fetch( `${mymint}/v1/keysets` );
             keysets = await keysets.json();
             keysets = keysets[ "keysets" ];
@@ -479,9 +503,16 @@
                     headers: {"Content-Type": "application/json"},
                     body: JSON.stringify({quote: quote_id, inputs: real_send_utxos, outputs: potential_outputs}),
                 }
+                if ( app_pubkey ) {
+                    var state_balance = nostr_state.nwc_info[ app_pubkey ].balance;
+                    nostr_state.nwc_info[ app_pubkey ].balance = state_balance - ( pre_amount * 1000 );
+                }
                 var pay_info = await fetch( `${mymint}/v1/melt/bolt11`, pay_data );
                 pay_info = await pay_info.json();
                 var response = null;
+                if ( app_pubkey ) var state_balance = nostr_state.nwc_info[ app_pubkey ].balance;
+                else var state_balance = "no app pubkey";
+                console.log( 89, Math.floor( state_balance / 1000 ) || state_balance, pre_amount );
                 if ( pay_info[ "paid" ] ) {
                     if ( "change" in pay_info && pay_info[ "change" ].length ) {
                         var pubkeys = await fetch( `${mymint}/v1/keys/${keyset}` );
@@ -492,13 +523,13 @@
                     }
                     if ( app_pubkey ) {
                         var pmthash = getInvoicePmthash( invoice_or_amount );
-                        nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ].preimage = pay_info[ "payment_preimage" ];
-                        nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ].settled_at = Math.floor( Date.now() / 1000 );
+                        nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "preimage" ] = pay_info[ "payment_preimage" ];
+                        nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "settled_at" ] = Math.floor( Date.now() / 1000 );
                         var balance_now = getBalance();
                         var state_balance = nostr_state.nwc_info[ app_pubkey ].balance;
                         var fees_paid = balance_before_paying - pre_amount - balance_now;
                         nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ].fees_paid = fees_paid;
-                        nostr_state.nwc_info[ app_pubkey ].balance = state_balance - ( pre_amount * 1000 ) - ( fees_paid * 1000 );
+                        console.log( Math.floor( state_balance / 1000 ), pre_amount, fees_paid );
                     }
                     console.log( "preimage:" );
                     console.log( pay_info[ "payment_preimage" ] );
@@ -508,6 +539,10 @@
                     response = `payment failed`;
                     utxos.push( ...real_send_utxos );
                     $( '.balance' ).innerText = getBalance();
+                    if ( app_pubkey ) {
+                        var state_balance = nostr_state.nwc_info[ app_pubkey ].balance;
+                        nostr_state.nwc_info[ app_pubkey ].balance = state_balance + ( pre_amount * 1000 );
+                    }
                 }
                 if ( app_pubkey ) return response;
                 return alert( response );
@@ -577,7 +612,7 @@
         }
     </script>
     <script>
-        (async()=>{
+        var createNWCconnection = async () => {
             var listen = async socket => {
                 var subId = super_nostr.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() ).substring( 0, 16 );
                 var filter  = {}
@@ -599,6 +634,24 @@
                 try {
                     command = JSON.parse( command );
                     console.log( command );
+                    if ( command.method === "get_info" ) {
+                        var blockheight = await getBlockheight();
+                        var blockhash = await getBlockhash( blockheight );
+                        var reply = JSON.stringify({
+                            result_type: command.method,
+                            result: {
+                                alias: "",
+                                color: "",
+                                pubkey: "",
+                                network: "mainnet",
+                                block_height: blockheight,
+                                block_hash: blockhash,
+                                methods: [ "pay_invoice", "get_balance", "make_invoice", "lookup_invoice", "list_transactions", "get_info" ],
+                            },
+                        });
+                        var event = await super_nostr.prepEvent( state[ "app_privkey" ], super_nostr.encrypt( state[ "app_privkey" ], event.pubkey, reply ), 23195, [ [ "p", event.pubkey ], [ "e", event.id ] ] );
+                        return super_nostr.sendEvent( event, nostr_state.socket );
+                    }
                     if ( command.method === "get_balance" ) {
                         var reply = JSON.stringify({
                             result_type: command.method,
@@ -693,7 +746,7 @@
                                 type: "incoming",
                                 invoice: invoice,
                                 bolt11: invoice,
-                                description: "hello world!",
+                                description: state.tx_history[ pmthash ][ "description" ],
                                 description_hash: state.tx_history[ pmthash ][ "description_hash" ],
                                 preimage: preimage_to_return,
                                 payment_hash: state.tx_history[ "payment_hash" ],
@@ -707,12 +760,92 @@
                         var event = await super_nostr.prepEvent( state[ "app_privkey" ], super_nostr.encrypt( state[ "app_privkey" ], event.pubkey, reply ), 23195, [ [ "p", event.pubkey ], [ "e", event.id ] ] );
                         return super_nostr.sendEvent( event, nostr_state.socket );
                     }
+                    if ( command.method === "list_transactions" ) {
+                        var txids = Object.keys( nostr_state.nwc_info[ app_pubkey ].tx_history );
+                        var txs = [];
+                        var include_unpaid = false;
+                        var include_incoming = true;
+                        var include_outgoing = true;
+                        if ( "unpaid" in command.params && command.params[ "unpaid" ] ) include_unpaid = true;
+                        if ( "type" in command.params && command.params[ "type" ] === "incoming" ) include_outgoing = false;
+                        if ( "type" in command.params && command.params[ "type" ] === "outgoing" ) include_incoming = false;
+                        txids.forEach( item => {
+                            var tx = nostr_state.nwc_info[ app_pubkey ].tx_history[ item ];
+                            if ( !include_unpaid && !tx[ "paid" ] ) return;
+                            if ( !include_incoming && tx[ "type" ] === "incoming" ) return;
+                            if ( !include_outgoing && tx[ "type" ] === "outgoing" ) return;
+                            txs.push( tx );
+                        });
+                        txs = JSON.parse( JSON.stringify( txs ) );
+                        txs.forEach( item => delete item[ "invoice_data" ] );
+                        txs.sort( ( a, b ) => b[ "created_at" ] - a[ "created_at" ] );
+                        // var findIndexOfTimestamp = ( timestamp, txs ) => {
+                        //     var timestamps = [];
+                        //     txs.forEach( tx => timestamps.push( tx[ "created_at" ] ) );
+                        //     var idx = -1;
+                        //     var comparison_time = 0;
+                        //     timestamps.every( ( time, index ) => {
+                        //         if ( Math.abs( time - timestamp ) < Math.abs( timestamp - comparison_time ) ) {
+                        //             idx = index;
+                        //             comparison_time = time;
+                        //             return true;
+                        //         }
+                        //         return;
+                        //     });
+                        //     return idx;
+                        // }
+                        if ( "from" in command.params ) {
+                            var new_txs = [];
+                            txs.forEach( item => {
+                                if ( item.created_at < command.params[ "from" ] ) return;
+                                new_txs.push( item );
+                            });
+                            txs = JSON.parse( JSON.stringify( new_txs ) );
+                        }
+                        if ( "until" in command.params ) {
+                            var new_txs = [];
+                            txs.forEach( item => {
+                                if ( item.created_at > command.params[ "until" ] ) return;
+                                new_txs.push( item );
+                            });
+                            txs = JSON.parse( JSON.stringify( new_txs ) );
+                        }
+                        if ( "offset" in command.params ) {
+                            var new_txs = [];
+                            txs.every( ( item, index ) => {
+                                if ( index < command.params[ "offset" ] ) return;
+                                new_txs.push( item );
+                                return true;
+                            });
+                            txs = JSON.parse( JSON.stringify( new_txs ) );
+                        }
+                        if ( "limit" in command.params ) {
+                            var new_txs = [];
+                            txs.every( item => {
+                                if ( new_txs.length >= command.params[ "limit" ] ) return;
+                                new_txs.push( item );
+                                return true;
+                            });
+                            txs = JSON.parse( JSON.stringify( new_txs ) );
+                        }
+                        var reply = JSON.stringify({
+                            result_type: command.method,
+                            result: {
+                                transactions: txs,
+                            },
+                        });
+                        var event = await super_nostr.prepEvent( state[ "app_privkey" ], super_nostr.encrypt( state[ "app_privkey" ], event.pubkey, reply ), 23195, [ [ "p", event.pubkey ], [ "e", event.id ] ] );
+                        return super_nostr.sendEvent( event, nostr_state.socket );
+                    }
                     if ( command.method === "pay_invoice" ) {
                         var invoice = null;
                         if ( "bolt11" in command.params ) invoice = command.params.bolt11;
                         if ( "invoice" in command.params && !invoice ) invoice = command.params.invoice;
                         if ( invoice ) var pmthash = getInvoicePmthash( invoice );
+                        console.log( 0 );
+                        console.log( 1, invoice );
                         var invoice_amt = bolt11.decode( invoice ).satoshis;
+                        console.log( 1.1, invoice, invoice_amt );
                         if ( !invoice_amt ) {
                             var reply = JSON.stringify({
                                 result_type: command.method,
@@ -726,7 +859,7 @@
                             return super_nostr.sendEvent( event, nostr_state.socket );
                         }
                         var balance = state.balance;
-                        if ( balance - ( 1.1 * ( invoice_amt * 1000 ) ) < 0 ) {
+                        if ( Math.floor( .99 * balance ) - ( invoice_amt * 1000 ) < 0 ) {
                             var reply = JSON.stringify({
                                 result_type: command.method,
                                 error: {
@@ -847,40 +980,69 @@
                 return waitForConnection();
             }
             await waitForConnection();
-            var relay = "wss://nostrue.com";
-            var ids = null;
-            var authors = null;
-            var kinds = [ 1 ];
-            var until = null;
-            var since = null;
-            var limit = 1;
-            var etags = null;
-            var ptags = [  ];
-            await super_nostr.getEvents( nostr_state.socket, ids, authors, kinds, until, since, limit, etags, ptags );
-            var app_privkey = super_nostr.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() );
-            var app_pubkey = nobleSecp256k1.getPublicKey( app_privkey, true ).substring( 2 );
-            var user_secret = super_nostr.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() );
-            var user_pubkey = nobleSecp256k1.getPublicKey( user_secret, true ).substring( 2 );
-            var nwc_string = `nostr+walletconnect://${app_pubkey}?relay=${relay}&secret=${user_secret}`;
-            nostr_state.nwc_info[ app_pubkey ] = {
-                nwc_string,
-                app_privkey,
-                app_pubkey,
-                user_secret,
-                user_pubkey,
-                relay,
-                balance: 0,
-                tx_history: {},
+            console.log( `connected!` );
+            if ( !Object.keys( nostr_state.nwc_info ).length ) {
+                var relay = "wss://nostrue.com";
+                var app_privkey = super_nostr.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() );
+                var app_pubkey = nobleSecp256k1.getPublicKey( app_privkey, true ).substring( 2 );
+                var user_secret = super_nostr.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() );
+                var user_pubkey = nobleSecp256k1.getPublicKey( user_secret, true ).substring( 2 );
+                var nwc_string = `nostr+walletconnect://${app_pubkey}?relay=${relay}&secret=${user_secret}`;
+                nostr_state.nwc_info[ app_pubkey ] = {
+                    mymint,
+                    nwc_string,
+                    app_privkey,
+                    app_pubkey,
+                    user_secret,
+                    user_pubkey,
+                    relay,
+                    balance: 0,
+                    tx_history: {},
+                }
+                console.log( nwc_string );
             }
-            var subId = super_nostr.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() ).substring( 0, 16 );
-            var filter  = {}
-            filter.kinds = [ 23194 ];
-            filter.since = Math.floor( Date.now() / 1000 );
-            filter[ "#p" ] = [ app_pubkey ];
-            var subscription = [ "REQ", subId, filter ];
-            nostr_state.socket.send( JSON.stringify( subscription ) );
-            console.log( nwc_string );
-        })();
+        }
+        $( '.connect_to_mint' ).onclick = () => {
+            var mint = prompt( `Pick a cashu mint from bitcoinmints.com (pick one that supports NUTS not MODULES) and enter its url here` );
+            if ( mint.includes( "..." ) ) return alert( `your mint url is invalid, be sure you clicked the clipboard icon on bitcoinmints.com -- if you just highlight + copy it won't work` );
+            if ( mint.startsWith( "fed1" ) ) return alert( `your mint is not a cashu mint, if you look on bitcoinmints.com you'll see you accidentally clicked on that supports MODULES and you need one that supports NUTS. Please try again` );
+            if ( !mint.startsWith( "https://" ) ) return alert( `your mint is not a cashu mint url, you must copy the mint's url and nothing else. Please try again` );
+            mymint = mint;
+        }
+        $( '.create_nwc_connection' ).onclick = () => {
+            if ( !mymint ) $( '.connect_to_mint' ).click();
+            if ( mymint ) createNWCconnection();
+        }
+        var show_string_loop = async () => {
+            if ( !Object.keys( nostr_state.nwc_info ).length ) {
+                await super_nostr.waitSomeSeconds( 1 );
+                show_string_loop();
+                return;
+            }
+            var connection_id = Object.keys( nostr_state.nwc_info )[ 0 ];
+            var nwc_string = nostr_state.nwc_info[ connection_id ].nwc_string;
+            mymint = nostr_state.nwc_info[ connection_id ].mymint;
+            $( '.nwc_string_div' ).innerHTML = `<p>Here is your NWC string:</p><p style="border: 1px solid black; background-color: #aaaaaa; color: black; font-family: monospace; padding: 0.5rem; max-width: 15rem; word-wrap: break-word;">${nwc_string}</p><p><button onclick="destroyConnection( '${connection_id}' )">Destroy this connection</button></p>`;
+            $( '.create_nwc_connection' ).classList.add( "hidden" );
+            $( '.connect_to_mint' ).classList.add( "hidden" );
+            if ( !nostr_state.socket ) createNWCconnection();
+            if ( utxos.length && !Number( $( '.balance' ).innerText ) ) $( '.balance' ).innerText = getBalance();
+        }
+        show_string_loop();
+        var destroyConnection = connection_id => {
+            delete nostr_state.nwc_info[ connection_id ];
+            localStorage[ "nwc_server_state" ] = JSON.stringify( nostr_state.nwc_info );
+            window.location.reload();
+        }
+        if ( localStorage[ "nwc_server_state" ] ) nostr_state.nwc_info = JSON.parse( localStorage[ "nwc_server_state" ] );
+        if ( localStorage[ "cashu_utxos" ] ) utxos = JSON.parse( localStorage[ "cashu_utxos" ] );
+        var saveState = async () => {
+            localStorage[ "nwc_server_state" ] = JSON.stringify( nostr_state.nwc_info );
+            localStorage[ "cashu_utxos" ] = JSON.stringify( utxos );
+            await super_nostr.waitSomeSeconds( 1 );
+            saveState();
+        }
+        saveState();
     </script>
 </body>
 </html>
