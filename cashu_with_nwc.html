@@ -354,7 +354,7 @@
             var is_paid_info = await fetch( url );
             is_paid_info = await is_paid_info.json();
             var is_paid = is_paid_info[ "paid" ];
-            nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "paid" ] = true;
+            if ( is_paid ) nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "paid" ] = true;
             var status_changed = is_paid && !settled_status;
             if ( status_changed ) nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "settled_at" ] = Math.floor( Date.now() / 1000 );
             if ( status_changed ) nostr_state.nwc_info[ app_pubkey ].balance = nostr_state.nwc_info[ app_pubkey ].balance + nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "amount" ];
@@ -512,7 +512,6 @@
                 var response = null;
                 if ( app_pubkey ) var state_balance = nostr_state.nwc_info[ app_pubkey ].balance;
                 else var state_balance = "no app pubkey";
-                console.log( 89, Math.floor( state_balance / 1000 ) || state_balance, pre_amount );
                 if ( pay_info[ "paid" ] ) {
                     if ( "change" in pay_info && pay_info[ "change" ].length ) {
                         var pubkeys = await fetch( `${mymint}/v1/keys/${keyset}` );
@@ -525,11 +524,11 @@
                         var pmthash = getInvoicePmthash( invoice_or_amount );
                         nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "preimage" ] = pay_info[ "payment_preimage" ];
                         nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "settled_at" ] = Math.floor( Date.now() / 1000 );
+                        nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ][ "paid" ] = true;
                         var balance_now = getBalance();
                         var state_balance = nostr_state.nwc_info[ app_pubkey ].balance;
                         var fees_paid = balance_before_paying - pre_amount - balance_now;
                         nostr_state.nwc_info[ app_pubkey ].tx_history[ pmthash ].fees_paid = fees_paid;
-                        console.log( Math.floor( state_balance / 1000 ), pre_amount, fees_paid );
                     }
                     console.log( "preimage:" );
                     console.log( pay_info[ "payment_preimage" ] );
@@ -618,7 +617,7 @@
                 var filter  = {}
                 filter.kinds = [ 23194 ];
                 filter.since = Math.floor( Date.now() / 1000 );
-                filter[ "#p" ] = Object.keys( nostr_state.nwc_info );
+                filter[ "#p" ] = [ Object.keys( nostr_state.nwc_info )[ 0 ] ];
                 var subscription = [ "REQ", subId, filter ];
                 socket.send( JSON.stringify( subscription ) );
             }
@@ -710,6 +709,7 @@
                             created_at: bolt11.decode( invoice_data.request ).timestamp,
                             expires_at: bolt11.decode( invoice_data.request ).timeExpireDate,
                             settled_at: null,
+                            paid: false,
                         }
                         checkInvoiceTilPaidOrError( invoice_data, app_pubkey );
                         var event = await super_nostr.prepEvent( state[ "app_privkey" ], super_nostr.encrypt( state[ "app_privkey" ], event.pubkey, reply ), 23195, [ [ "p", event.pubkey ], [ "e", event.id ] ] );
@@ -771,9 +771,13 @@
                         if ( "type" in command.params && command.params[ "type" ] === "outgoing" ) include_incoming = false;
                         txids.forEach( item => {
                             var tx = nostr_state.nwc_info[ app_pubkey ].tx_history[ item ];
+                            console.log( tx );
                             if ( !include_unpaid && !tx[ "paid" ] ) return;
+                            console.log( 0 );
                             if ( !include_incoming && tx[ "type" ] === "incoming" ) return;
+                            console.log( 1 );
                             if ( !include_outgoing && tx[ "type" ] === "outgoing" ) return;
+                            console.log( 2 );
                             txs.push( tx );
                         });
                         txs = JSON.parse( JSON.stringify( txs ) );
@@ -813,9 +817,8 @@
                         if ( "offset" in command.params ) {
                             var new_txs = [];
                             txs.every( ( item, index ) => {
-                                if ( index < command.params[ "offset" ] ) return;
+                                if ( index < command.params[ "offset" ] ) return true;
                                 new_txs.push( item );
-                                return true;
                             });
                             txs = JSON.parse( JSON.stringify( new_txs ) );
                         }
@@ -842,10 +845,7 @@
                         if ( "bolt11" in command.params ) invoice = command.params.bolt11;
                         if ( "invoice" in command.params && !invoice ) invoice = command.params.invoice;
                         if ( invoice ) var pmthash = getInvoicePmthash( invoice );
-                        console.log( 0 );
-                        console.log( 1, invoice );
                         var invoice_amt = bolt11.decode( invoice ).satoshis;
-                        console.log( 1.1, invoice, invoice_amt );
                         if ( !invoice_amt ) {
                             var reply = JSON.stringify({
                                 result_type: command.method,
@@ -887,6 +887,7 @@
                             created_at: bolt11.decode( invoice ).timestamp,
                             expires_at: bolt11.decode( invoice ).timeExpireDate,
                             settled_at: null,
+                            paid: false,
                         }
 
                         var response_from_mint = await send( invoice, null, app_pubkey );
@@ -972,15 +973,6 @@
                 await inner_loop();
                 await nostr_loop();
             }
-            nostr_loop();
-            var waitForConnection = async () => {
-                if ( nostr_state.socket.readyState === 1 ) return;
-                console.log( 'waiting for connection...' );
-                await super_nostr.waitSomeSeconds( 1 );
-                return waitForConnection();
-            }
-            await waitForConnection();
-            console.log( `connected!` );
             if ( !Object.keys( nostr_state.nwc_info ).length ) {
                 var relay = "wss://nostrue.com";
                 var app_privkey = super_nostr.bytesToHex( nobleSecp256k1.utils.randomPrivateKey() );
@@ -1001,6 +993,15 @@
                 }
                 console.log( nwc_string );
             }
+            nostr_loop();
+            var waitForConnection = async () => {
+                if ( nostr_state.socket.readyState === 1 ) return;
+                console.log( 'waiting for connection...' );
+                await super_nostr.waitSomeSeconds( 1 );
+                return waitForConnection();
+            }
+            await waitForConnection();
+            console.log( `connected!` );
         }
         $( '.connect_to_mint' ).onclick = () => {
             var mint = prompt( `Pick a cashu mint from bitcoinmints.com (pick one that supports NUTS not MODULES) and enter its url here` );
