@@ -821,6 +821,7 @@
                                 new_txs.push( item );
                             });
                             txs = JSON.parse( JSON.stringify( new_txs ) );
+                            return true;
                         }
                         if ( "limit" in command.params ) {
                             var new_txs = [];
